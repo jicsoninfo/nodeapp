@@ -1,0 +1,287 @@
+//====================================================================================================
+Perfect! Let’s create a complete Node.js + Express + Mongoose backend that matches the Swagger spec we just built, including:
+
+User registration with email verification
+
+Login with JWT
+
+Two-Factor Authentication (2FA)
+
+Roles and permissions
+
+Fully compatible with Swagger UI
+
+Below is a step-by-step ready-to-run backend.
+
+1️⃣ Project Setup
+mkdir auth-system
+cd auth-system
+npm init -y
+npm install express mongoose bcryptjs jsonwebtoken nodemailer speakeasy qrcode dotenv cors body-parser swagger-ui-express
+
+
+Create folders:
+
+src/
+├── controllers/
+├── models/
+├── routes/
+├── middleware/
+├── utils/
+└── swagger.json
+
+
+Create .env:
+
+PORT=5050
+MONGO_URI=mongodb://localhost:27017/authsystem
+JWT_SECRET=your_jwt_secret
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_email_password
+
+2️⃣ Models
+models/User.js
+import mongoose from "mongoose";
+
+const userSchema = new mongoose.Schema({
+  name: String,
+  email: { type: String, unique: true },
+  password: String,
+  roles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Role' }],
+  permissions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Permission' }],
+  emailVerified: { type: Boolean, default: false },
+  verificationToken: String,
+  twoFASecret: String,
+  twoFAEnabled: { type: Boolean, default: false }
+}, { timestamps: true });
+
+export default mongoose.model("User", userSchema);
+
+models/Role.js
+import mongoose from "mongoose";
+
+const roleSchema = new mongoose.Schema({
+  name: { type: String, unique: true },
+  permissions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Permission' }]
+});
+
+export default mongoose.model("Role", roleSchema);
+
+models/Permission.js
+import mongoose from "mongoose";
+
+const permissionSchema = new mongoose.Schema({
+  name: { type: String, unique: true }
+});
+
+export default mongoose.model("Permission", permissionSchema);
+
+3️⃣ Middleware
+middleware/auth.js
+import jwt from "jsonwebtoken";
+import User from "../models/User.js";
+
+export const auth = async (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id);
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    next();
+  } catch (err) {
+    res.status(401).json({ error: "Unauthorized" });
+  }
+};
+
+4️⃣ Controllers
+controllers/authController.js
+import User from "../models/User.js";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import crypto from "crypto";
+import nodemailer from "nodemailer";
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
+
+// Helper to send email
+const sendEmail = async (to, subject, html) => {
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+  });
+  await transporter.sendMail({ from: process.env.EMAIL_USER, to, subject, html });
+};
+
+// Register
+export const register = async (req, res) => {
+  const { name, email, password } = req.body;
+  try {
+    const existing = await User.findOne({ email });
+    if (existing) return res.status(400).json({ error: "Email already in use" });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+
+    const user = await User.create({ name, email, password: hashed, verificationToken });
+
+    const verifyLink = `${req.protocol}://${req.get("host")}/api/auth/verify/${verificationToken}`;
+    await sendEmail(email, "Verify your email", `<a href="${verifyLink}">${verifyLink}</a>`);
+
+    res.status(201).json({ success: true, message: "Check your email to verify account." });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Verify Email
+export const verifyEmail = async (req, res) => {
+  const { token } = req.params;
+  const user = await User.findOne({ verificationToken: token });
+  if (!user) return res.status(400).json({ error: "Invalid token" });
+
+  user.emailVerified = true;
+  user.verificationToken = null;
+  await user.save();
+  res.json({ success: true, message: "Email verified successfully!" });
+};
+
+// Login
+export const login = async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user) return res.status(401).json({ error: "Invalid credentials" });
+  if (!user.emailVerified) return res.status(403).json({ error: "Verify email first" });
+
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) return res.status(401).json({ error: "Invalid credentials" });
+
+  if (user.twoFAEnabled) return res.json({ twoFARequired: true, userId: user._id });
+
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+  res.json({ token });
+};
+
+// Setup 2FA
+export const setup2FA = async (req, res) => {
+  const secret = speakeasy.generateSecret({ name: "AuthApp" });
+  req.user.twoFASecret = secret.base32;
+  await req.user.save();
+
+  const qrCodeData = await QRCode.toDataURL(secret.otpauth_url);
+  res.json({ qrCode: qrCodeData });
+};
+
+// Verify 2FA
+export const verify2FA = async (req, res) => {
+  const { token } = req.body;
+  const verified = speakeasy.totp.verify({ secret: req.user.twoFASecret, encoding: "base32", token });
+  if (!verified) return res.status(401).json({ error: "Invalid 2FA code" });
+
+  const jwtToken = jwt.sign({ id: req.user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+  res.json({ token: jwtToken });
+};
+
+5️⃣ Routes
+routes/auth.js
+import express from "express";
+import { register, verifyEmail, login, setup2FA, verify2FA } from "../controllers/authController.js";
+import { auth } from "../middleware/auth.js";
+
+const router = express.Router();
+
+router.post("/register", register);
+router.get("/verify/:token", verifyEmail);
+router.post("/login", login);
+router.post("/2fa/setup", auth, setup2FA);
+router.post("/2fa/verify", auth, verify2FA);
+
+export default router;
+
+6️⃣ Main App — server.js
+import express from "express";
+import mongoose from "mongoose";
+import dotenv from "dotenv";
+import cors from "cors";
+import bodyParser from "body-parser";
+import swaggerUi from "swagger-ui-express";
+import authRoutes from "./routes/auth.js";
+import fs from "fs";
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+mongoose.connect(process.env.MONGO_URI).then(() => console.log("MongoDB connected"));
+
+app.use("/api/auth", authRoutes);
+
+// Swagger
+const swaggerDocument = JSON.parse(fs.readFileSync("./src/swagger.json"));
+app.use("/swagger", swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
+app.listen(process.env.PORT || 5050, () => console.log(`Server running on port ${process.env.PORT}`));
+
+
+✅ This gives you:
+
+User registration with email verification
+
+Login (blocks unverified users)
+
+Two-Factor Authentication (TOTP/QR code)
+
+Swagger UI at /swagger
+
+JWT-based auth
+
+If you want, I can also add full Role & Permission management in this backend next, so your admin can create roles, assign permissions, and protect routes just like Spatie in Laravel.
+
+Do you want me to do that?
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
+//====================================================================================================
