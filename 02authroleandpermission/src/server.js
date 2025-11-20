@@ -3,6 +3,8 @@ import express from 'express'; // new pattern need to add "type": "module", in j
 import dotenv from 'dotenv'; // for env file
 import { connectDB } from './config/db.js';
 
+import authRoutes from './routes/auth.routes.js';
+
 dotenv.config();
 //connectDB();
 
@@ -12,6 +14,9 @@ const app = express();
 //app.listen(5000, () => console.log('server is running'));
 //app.listen(process.env.PORT, () => console.log(`server is running on port ${process.env.PORT}`));
 
+//app.use(express.json());
+
+app.use('/api/auth', authRoutes);
 
 async function start(){
     try{
