@@ -289,6 +289,12 @@ If you want, I can style it to match your Camper Booking website theme with colo
                             type: "POST",
                             data: { _token: "{{ csrf_token() }}" },
                             success: function () {
+                                // 🔥 Clear old OTP values
+                                    document.querySelectorAll(".otp-input").forEach(i => i.value = "");
+
+                                    // 🔥 Focus first input for better UX
+                                    document.querySelector(".otp-input").focus();
+                                    
                                 let modal = new bootstrap.Modal(document.getElementById('emailCodeModal'));
                                 modal.show();
                             },
