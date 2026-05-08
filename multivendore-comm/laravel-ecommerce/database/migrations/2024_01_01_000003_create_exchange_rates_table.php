@@ -1,0 +1,25 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration {
+    public function up(): void
+    {
+        Schema::create('exchange_rates', function (Blueprint $table) {
+            $table->uuid('id')->primary()->default(DB::raw('(UUID())'));
+            $table->char('from_currency', 3);
+            $table->char('to_currency', 3);
+            $table->decimal('rate', 18, 8);
+            $table->timestamp('fetched_at')->useCurrent();
+            $table->timestamps();
+
+            $table->index(['from_currency', 'to_currency']);
+            $table->foreign('from_currency')->references('code')->on('currencies');
+            $table->foreign('to_currency')->references('code')->on('currencies');
+        });
+    }
+
+    public function down(): void { Schema::dropIfExists('exchange_rates'); }
+};
